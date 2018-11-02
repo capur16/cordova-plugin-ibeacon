@@ -319,8 +319,8 @@ public class LocationManager extends CordovaPlugin implements BeaconConsumer {
       }
 
       final AlertDialog.Builder builder = new AlertDialog.Builder(activity);
-      builder.setTitle("This app needs location access");
-      builder.setMessage("Please grant location access so this app can detect beacons.");
+      builder.setTitle("Questa app richiede l'accesso alla tua posizione");
+      builder.setMessage("Se non consenti sempre la localizzazione alcune importanti funzioni non saranno disponibili");
       builder.setPositiveButton(android.R.string.ok, null);
       builder.setOnDismissListener(new DialogInterface.OnDismissListener() {
         @SuppressLint("NewApi")

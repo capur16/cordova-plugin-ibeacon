@@ -6,9 +6,9 @@
  to you under the Apache License, Version 2.0 (the
  "License"); you may not use this file except in compliance
  with the License.  You may obtain a copy of the License at
-
+ 
  http://www.apache.org/licenses/LICENSE-2.0
-
+ 
  Unless required by applicable law or agreed to in writing,
  software distributed under the License is distributed on an
  "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
@@ -20,8 +20,26 @@
 #import "CDVLocationManager.h"
 #import "LMLogger.h"
 
-@implementation CDVLocationManager {
+@interface CDVLocationManager ()
 
+@property (copy,nonatomic) NSString *targetPeripheral;
+@property (strong,nonatomic) NSMutableArray *discoveredPeripherals;
+@property (strong,nonatomic) CBPeripheral *connectedPeripheral;
+@property (strong,nonatomic) CBUUID *deviceInfoUUID;
+@property (strong, nonatomic) CLBeaconRegion *beaconRegion;
+@property (strong, nonatomic) CBCharacteristic *glob_characteristic;
+//identifier
+@property(nonatomic, assign) UIBackgroundTaskIdentifier backgroundUpdateTask;
+@property(nonatomic,assign) CBPeripheral *glob_peripheral;
+@property(nonatomic,retain) NSString* glob_identifier;
+@property(nonatomic) int writedCharateristic;
+
+@end
+
+CBPeripheral *mConnectedPeripheral;
+
+@implementation CDVLocationManager {
+    
 }
 
 # pragma mark CDVPlugin
@@ -30,14 +48,26 @@
 {
     [self initEventQueue];
     [self pauseEventPropagationToDom]; // Before the DOM is loaded we'll just keep collecting the events and fire them later.
-
+    
     [self initLocationManager];
     [self initPeripheralManager];
+    
+    //Alessandro Pistella
+    [self initCentralManager];
     
     self.debugLogEnabled = true;
     self.debugNotificationsEnabled = false;
     
 }
+
+//PISTELLA
+- (void) initCentralManager {
+    NSLog(@"PISTELLA - Init Central Manager");
+    self.central = [[CBCentralManager alloc] initWithDelegate:self queue:dispatch_get_global_queue(QOS_CLASS_BACKGROUND, 0)];
+    self.discoveredPeripherals=[NSMutableArray new];
+    self.deviceInfoUUID=[CBUUID UUIDWithString:@"0x3412"];
+}
+//PISTELLA END
 
 - (void) initLocationManager {
     self.locationManager = [[CLLocationManager alloc] init];
@@ -75,7 +105,7 @@
 }
 
 - (void) checkIfDomSignaldDelegateReady {
-
+    
     if (self.queue != nil && !self.queue.isSuspended) {
         return;
     }
@@ -118,16 +148,51 @@
             [dict setObject:[self jsCallbackNameForSelector:(_cmd)] forKey:@"eventType"];
             [dict setObject:[self mapOfRegion:region] forKey:@"region"];
             
+            NSLog(@"PISTELLA - B1 - DID EnterRegion %@", region.identifier);
+            
             CDVPluginResult* pluginResult = [CDVPluginResult resultWithStatus:CDVCommandStatus_OK messageAsDictionary:dict];
             [pluginResult setKeepCallbackAsBool:YES];
             return pluginResult;
-
+            
         } :nil :NO :self.delegateCallbackId];
     }];
+    
+    dispatch_async(dispatch_get_main_queue(), ^{
+        //Facciamo partire lo scan
+        dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+            
+            [self beginBackgroundUpdateTask];
+            
+            //[self startScan];
+            for (CBPeripheral *peripheral in self.discoveredPeripherals) {
+                NSLog(@"PISTELLA - B - Search for %@ and finded %@",self.glob_identifier, peripheral.name);
+                if ([peripheral.name isEqualToString: self.glob_identifier]) {
+                    NSLog(@"%@ IT'S MINE!",peripheral.name);
+                    //Trasliamo
+                    self.glob_peripheral = peripheral;
+                }
+            }
+            
+            NSLog(@ "PISTELLA - Provo a connettermi");
+            if (self.connectedPeripheral) {
+                [self->_central cancelPeripheralConnection:self.connectedPeripheral];
+            }
+            
+            //Controlliamo l'abbiamo trovato
+            if (self.glob_peripheral != nil) {
+                self.targetPeripheral=self.glob_peripheral.identifier.UUIDString;
+                [self->_central connectPeripheral:_glob_peripheral options:nil];
+            }else{
+                NSLog(@ "PISTELLA - Non sono riuscito a trovare il mio device");
+            }
+            
+            [self endBackgroundUpdateTask];
+        });
+    });
 }
 
 -(void)locationManager:(CLLocationManager *)manager didExitRegion:(CLRegion *)region {
-
+    
     [self.queue addOperationWithBlock:^{
         
         [self _handleCallSafely:^CDVPluginResult *(CDVInvokedUrlCommand *command) {
@@ -148,7 +213,7 @@
 }
 
 - (void)locationManager:(CLLocationManager *)manager didStartMonitoringForRegion:(CLRegion *)region {
-
+    
     [self.queue addOperationWithBlock:^{
         
         [self _handleCallSafely:^CDVPluginResult *(CDVInvokedUrlCommand *command) {
@@ -196,6 +261,33 @@
         [beaconsMapsArray addObject:dictOfBeacon];
     }
     
+    //Pistella
+    if (beacons.count) {
+        CLBeacon * beacon = beacons[0]; // If you want to detect the range of third beacon
+        NSString *proximityDesc = @"Sconosciuto";
+        switch (beacon.proximity) {
+            case CLProximityUnknown:
+                proximityDesc = @"Sconosciuto";
+                break;
+            case CLProximityFar:
+                proximityDesc = @"Lontano";
+                break;
+            case CLProximityNear:
+                proximityDesc = @"Vicino";
+                break;
+            case CLProximityImmediate:
+                proximityDesc = @"Immediato";
+            default:
+                proximityDesc = @"Non trovato";
+                break;
+        }
+        //NSLog(@"Beacon %@ is %@ (about %f m)", beacon.proximityUUID, proximityDesc, beacon.accuracy);
+        [self updateBeaconsTextWithValue:YES beaconsNumber:beacons.count beaconMajor:beacon.major.intValue beaconMinor:beacon.minor.intValue beaconRssi:beacon.rssi beaconDistance:beacon.accuracy beaconNearby:proximityDesc];
+        
+        //
+    }
+    //Pistella END
+    
     [self.queue addOperationWithBlock:^{
         
         [self _handleCallSafely:^CDVPluginResult *(CDVInvokedUrlCommand *command) {
@@ -215,12 +307,30 @@
     }];
 }
 
+//Pistella
+-(void) peripheral:(CBPeripheral *)peripheral didUpdateValueForCharacteristic:(CBCharacteristic *)characteristic error:(NSError *)error {
+    NSLog(@"Updated characteristic...(%@:%@)", characteristic.UUID, characteristic.value);
+    NSString *manf=[[NSString alloc] initWithData:characteristic.value encoding:NSUTF8StringEncoding];
+    dispatch_async(dispatch_get_main_queue(), ^{
+        UIApplication *app=[UIApplication sharedApplication];
+        if (app.applicationState == UIApplicationStateBackground) {
+            NSLog(@"PISTELLA - We are in the background");
+            UIUserNotificationSettings *notifySettings=[[UIApplication sharedApplication] currentUserNotificationSettings];
+            if ((notifySettings.types & UIUserNotificationTypeAlert)!=0) {
+                UILocalNotification *notification=[UILocalNotification new];
+                notification.alertBody=[NSString stringWithFormat:@"PISTELLA - Connected to peripheral from %@",manf];
+                [app presentLocalNotificationNow:notification];
+            }
+        }
+    });
+}
+//Pistella END
 
 # pragma mark Javascript Plugin API
 
 - (void)onDomDelegateReady:(CDVInvokedUrlCommand*)command {
     [self _handleCallSafely:^CDVPluginResult *(CDVInvokedUrlCommand * command) {
-
+        
         // Starts propagating the events.
         [self resumeEventPropagationToDom];
         
@@ -230,13 +340,13 @@
 
 - (void)disableDebugLogs:(CDVInvokedUrlCommand*)command {
     [self _handleCallSafely:^CDVPluginResult *(CDVInvokedUrlCommand * command) {
-
+        
         self.debugLogEnabled = false;
         [self.logger setDebugLogEnabled:false];
         
         return [CDVPluginResult resultWithStatus:CDVCommandStatus_OK];
     } :command];
-
+    
 }
 
 - (void)enableDebugLogs:(CDVInvokedUrlCommand*)command {
@@ -261,7 +371,7 @@
 
 - (void)enableDebugNotifications:(CDVInvokedUrlCommand*)command {
     [self _handleCallSafely:^CDVPluginResult *(CDVInvokedUrlCommand * command) {
-
+        
         self.debugNotificationsEnabled = true;
         [self.logger setDebugNotificationsEnabled:true];
         
@@ -283,6 +393,7 @@
 }
 
 - (void)startMonitoringForRegion:(CDVInvokedUrlCommand*)command {
+    NSLog(@"PISTELLA - Start monitor for region");
     [self _handleCallSafely:^CDVPluginResult *(CDVInvokedUrlCommand *command) {
         
         NSError* error;
@@ -396,7 +507,7 @@
     [self _handleCallSafely:^CDVPluginResult *(CDVInvokedUrlCommand *command) {
         
         CLAuthorizationStatus authorizationStatus = [CLLocationManager authorizationStatus];
-
+        
         NSString* authorizationStatusString = [self authorizationStatusAsString:authorizationStatus];
         
         NSDictionary *dict = @{@"authorizationStatus": authorizationStatusString};
@@ -407,39 +518,39 @@
 }
 
 - (void) requestAlwaysAuthorization:(CDVInvokedUrlCommand*)command {
-
+    
     // Under iOS 8, there is no need for these permissions, therefore we can
     // send back OK to the calling DOM without any further ado.
     if (!IsAtLeastiOSVersion(@"8.0")) {
         CDVPluginResult * pluginResult = [CDVPluginResult resultWithStatus:CDVCommandStatus_OK];
         [self.commandDelegate sendPluginResult:pluginResult callbackId:command.callbackId];
     } else {
-
+        
         [self _handleCallSafely:^CDVPluginResult *(CDVInvokedUrlCommand* command) {
-
+            
             [self.locationManager requestAlwaysAuthorization];
-
+            
             return [CDVPluginResult resultWithStatus:CDVCommandStatus_OK];
-
+            
         } :command];
     }
 }
 
 - (void) requestWhenInUseAuthorization:(CDVInvokedUrlCommand*)command  {
-
+    
     // Under iOS 8, there is no need for these permissions, therefore we can
     // send back OK to the calling DOM without any further ado.
     if (!IsAtLeastiOSVersion(@"8.0")) {
         CDVPluginResult * pluginResult = [CDVPluginResult resultWithStatus:CDVCommandStatus_OK];
         [self.commandDelegate sendPluginResult:pluginResult callbackId:command.callbackId];
     } else {
-
+        
         [self _handleCallSafely:^CDVPluginResult *(CDVInvokedUrlCommand* command) {
-
+            
             [self.locationManager requestWhenInUseAuthorization];
-
+            
             return [CDVPluginResult resultWithStatus:CDVCommandStatus_OK];
-
+            
         } :command];
     }
 }
@@ -447,22 +558,22 @@
 - (void)locationManager:(CLLocationManager *)manager didChangeAuthorizationStatus:(CLAuthorizationStatus)status {
     NSLog(@"didChangeAuthorizationStatus");
     
-     [self _handleCallSafely:^CDVPluginResult *(CDVInvokedUrlCommand *command) {
-         
-         NSString *statusString = [self authorizationStatusAsString:status];
-         
-         [[self getLogger] debugLog:@"didChangeAuthorizationStatus: %d => %@", status, statusString];
-         [[self getLogger] debugNotification:@"didChangeAuthorizationStatus: %d => %@", status, statusString];
-         
-         NSMutableDictionary* dict = [NSMutableDictionary new];
-         [dict setObject:[self jsCallbackNameForSelector:(_cmd)] forKey:@"eventType"];
-         [dict setObject:statusString forKey:@"status"];
-         
-         CDVPluginResult* pluginResult = [CDVPluginResult resultWithStatus:CDVCommandStatus_OK messageAsDictionary:dict];
-         [pluginResult setKeepCallbackAsBool:YES];
-         return pluginResult;
-
-     } :nil :NO :self.delegateCallbackId];
+    [self _handleCallSafely:^CDVPluginResult *(CDVInvokedUrlCommand *command) {
+        
+        NSString *statusString = [self authorizationStatusAsString:status];
+        
+        [[self getLogger] debugLog:@"didChangeAuthorizationStatus: %d => %@", status, statusString];
+        [[self getLogger] debugNotification:@"didChangeAuthorizationStatus: %d => %@", status, statusString];
+        
+        NSMutableDictionary* dict = [NSMutableDictionary new];
+        [dict setObject:[self jsCallbackNameForSelector:(_cmd)] forKey:@"eventType"];
+        [dict setObject:statusString forKey:@"status"];
+        
+        CDVPluginResult* pluginResult = [CDVPluginResult resultWithStatus:CDVCommandStatus_OK messageAsDictionary:dict];
+        [pluginResult setKeepCallbackAsBool:YES];
+        return pluginResult;
+        
+    } :nil :NO :self.delegateCallbackId];
 }
 
 
@@ -487,7 +598,7 @@
         } else {
             arrayOfRegions = [self mapsOfRegions:self.locationManager.rangedRegions];
         }
-
+        
         return [CDVPluginResult resultWithStatus:CDVCommandStatus_OK messageAsArray:arrayOfRegions];
     } :command];
 }
@@ -515,10 +626,10 @@
         
         [[self getLogger] debugLog:@"Registering delegate callback ID: %@", command.callbackId];
         self.delegateCallbackId = command.callbackId;
-
+        
         CDVPluginResult *result = [CDVPluginResult resultWithStatus:CDVCommandStatus_OK];
         [result setKeepCallbackAsBool:YES];
-
+        
         return result;
     } :command];
 }
@@ -635,7 +746,7 @@
             [[self getLogger] debugLog:@"ERROR Cannot advertise with that Region. Must be a Beacon"];
             return [CDVPluginResult resultWithStatus:CDVCommandStatus_ERROR messageAsString:@"Cannot advertise with that Region. Must be a BeaconRegion"];
         } else {
-           
+            
             BOOL measuredPowerSpecifiedByUser = command.arguments.count > 1;
             NSNumber *measuredPower = nil;
             if (measuredPowerSpecifiedByUser) {
@@ -644,11 +755,11 @@
             } else {
                 [[self getLogger] debugLog:@"[Default measuredPower will be used."];
             }
-
+            
             CLBeaconRegion* beaconRegion = (CLBeaconRegion*)region;
             _advertisedBeaconRegion = beaconRegion;
             _advertisedPeripheralData = [beaconRegion peripheralDataWithMeasuredPower:measuredPower];
-
+            
             NSMutableDictionary* dict = [[NSMutableDictionary alloc]init];
             [dict setObject:[self peripherialStateAsString:_peripheralManager.state] forKey:@"state"];
             
@@ -670,7 +781,7 @@
         
         if (_peripheralManager.state == CBPeripheralManagerStatePoweredOn) {
             [[self getLogger] debugLog:@"Stopping the advertising. The peripheral manager might report isAdvertising true even after this, for a short period of time."];
-
+            
             [_peripheralManager stopAdvertising];
             _advertisedBeaconRegion = nil;
             _advertisedPeripheralData = nil;
@@ -698,7 +809,7 @@
         } else {
             isAvailable = isValidRegion;
         }
-
+        
         CDVPluginResult* result = [CDVPluginResult resultWithStatus:CDVCommandStatus_OK messageAsBool:isAvailable];
         [result setKeepCallbackAsBool:YES];
         return result;
@@ -708,7 +819,7 @@
 
 - (void)isBluetoothEnabled: (CDVInvokedUrlCommand*)command {
     [self _handleCallSafely:^CDVPluginResult *(CDVInvokedUrlCommand *command) {
-
+        
         //this should be sufficient - otherwise will need to add a centralmanager reference
         BOOL isEnabled = _peripheralManager.state == CBPeripheralManagerStatePoweredOn;
         
@@ -722,7 +833,7 @@
 - (void)enableBluetooth: (CDVInvokedUrlCommand*)command {
     [self _handleCallSafely:^CDVPluginResult *(CDVInvokedUrlCommand *command) {
         
-       [[self getLogger] debugLog:@"Enable Bluetooth not required on iOS."];
+        [[self getLogger] debugLog:@"Enable Bluetooth not required on iOS."];
         
         CDVPluginResult* result = [CDVPluginResult resultWithStatus:CDVCommandStatus_OK];
         [result setKeepCallbackAsBool:YES];
@@ -743,12 +854,12 @@
     } :command];
 }
 
-#pragma mark Parsing 
+#pragma mark Parsing
 
 - (CLRegion*) parseRegion:(CDVInvokedUrlCommand*) command returningError:(out NSError **)error {
     
     NSDictionary* dict = command.arguments[0];
-
+    
     NSString* typeName = [dict objectForKey:@"typeName"];
     if (typeName == nil) {
         *error = [self parseErrorWithDescription:@"'typeName' is missing, cannot parse CLRegion."];
@@ -760,7 +871,13 @@
         *error = [self parseErrorWithDescription:@"'identifier' is missing, cannot parse CLRegion."];
         return nil;
     }
-  
+    //PISTELLA
+    //Mettiamolo nella globale
+    self.glob_identifier = identifier;
+    NSLog(@"PISTELLA - Memorizzo l'identificatore %@", self.glob_identifier);
+    //PISTELLA END
+    
+    
     if ([typeName isEqualToString:@"BeaconRegion"]) {
         return [self parseBeaconRegionFromMap:dict andIdentifier:identifier returningError:error];
     } else if ([typeName isEqualToString:@"CircularRegion"]) {
@@ -797,7 +914,7 @@
     CLLocationCoordinate2D center = CLLocationCoordinate2DMake([latitude doubleValue], [longitude doubleValue]);
     
     region = [[CLRegion alloc] initCircularRegionWithCenter:center radius:radius identifier:identifier];
-
+    
     if (region == nil) {
         *error = [self parseErrorWithDescription:@"CLCircularRegion parsing failed for unknown reason."];
     }
@@ -835,7 +952,7 @@
         *error = [self parseErrorWithDescription:@"Unsupported combination of 'major' and 'minor' parameters."];
         return nil;
     }
-
+    
     NSNumber *notifyFlag = [dict objectForKey:@"notifyEntryStateOnDisplay"];
     
     if (notifyFlag != nil) {
@@ -859,7 +976,7 @@
 
 
 - (NSError*) errorWithCode: (int)code andDescription:(NSString*) description {
-
+    
     NSMutableDictionary* details;
     if (description != nil) {
         details = [NSMutableDictionary dictionary];
@@ -901,7 +1018,7 @@
 - (void) _handleExceptionOfCommand: (CDVInvokedUrlCommand*) command : (NSException*) exception {
     NSLog(@"Uncaught exception: %@", exception.description);
     NSLog(@"Stack trace: %@", [exception callStackSymbols]);
-
+    
     // When calling without a request (LocationManagerDelegate callbacks) from the client side the command can be null.
     if (command == nil) {
         return;
@@ -925,11 +1042,11 @@
 - (NSString *)authorizationStatusAsString: (CLAuthorizationStatus) authorizationStatus {
     
     NSDictionary* statuses = @{@(kCLAuthorizationStatusNotDetermined) : @"AuthorizationStatusNotDetermined",
-      @(kCLAuthorizationStatusAuthorized) : @"AuthorizationStatusAuthorized",
-      @(kCLAuthorizationStatusDenied) : @"AuthorizationStatusDenied",
-      @(kCLAuthorizationStatusRestricted) : @"AuthorizationStatusRestricted",
-      @(kCLAuthorizationStatusAuthorizedWhenInUse) : @"AuthorizationStatusAuthorizedWhenInUse",
-      @(kCLAuthorizationStatusAuthorizedAlways) : @"AuthorizationStatusAuthorizedAlways"};
+                               @(kCLAuthorizationStatusAuthorized) : @"AuthorizationStatusAuthorized",
+                               @(kCLAuthorizationStatusDenied) : @"AuthorizationStatusDenied",
+                               @(kCLAuthorizationStatusRestricted) : @"AuthorizationStatusRestricted",
+                               @(kCLAuthorizationStatusAuthorizedWhenInUse) : @"AuthorizationStatusAuthorizedWhenInUse",
+                               @(kCLAuthorizationStatusAuthorizedAlways) : @"AuthorizationStatusAuthorizedAlways"};
     
     return [statuses objectForKey:[NSNumber numberWithInt: authorizationStatus]];
 }
@@ -962,17 +1079,17 @@
 
 
 - (NSDictionary*) mapOfRegion: (CLRegion*) region {
-
+    
     NSMutableDictionary* dict = [[NSMutableDictionary alloc] init];
-
+    
     // identifier
     [dict setObject:region.identifier forKey:@"identifier"];
-
+    
     // typeName - First two characters are cut down to remove the "CL" prefix.
     NSString *typeName = [NSStringFromClass([region class]) substringFromIndex:2];
     typeName = [typeName isEqualToString:@"Region"] ? @"CircularRegion" : typeName;
     [dict setObject:typeName forKey:@"typeName"];
-
+    
     if ([region isKindOfClass:[CLBeaconRegion class]]) {
         CLBeaconRegion* beaconRegion = (CLBeaconRegion*) region;
         NSDictionary * beaconRegionDict = [self mapOfBeaconRegion:beaconRegion];
@@ -983,14 +1100,14 @@
     // radius
     NSNumber* radius = [NSNumber numberWithDouble: region.radius];
     [dict setValue: radius forKey:@"radius"];
-
+    
     
     NSNumber* latitude = [NSNumber numberWithDouble: region.center.latitude ];
     NSNumber* longitude = [NSNumber numberWithDouble: region.center.longitude];
     // center
     [dict setObject: latitude forKey:@"latitude"];
     [dict setObject: longitude forKey:@"longitude"];
-
+    
     return dict;
 }
 
@@ -1058,7 +1175,7 @@
     
     NSString* shortName = [fullName stringByReplacingOccurrencesOfString:@"locationManager:" withString:@""];
     shortName = [shortName stringByReplacingOccurrencesOfString:@":error:" withString:@""];
-
+    
     NSRange range = [shortName rangeOfString:@":"];
     
     while(range.location != NSNotFound) {
@@ -1067,7 +1184,7 @@
             NSString* upperCaseLetter = [[shortName substringWithRange:range] uppercaseString];
             shortName = [shortName stringByReplacingCharactersInRange:range withString:upperCaseLetter];
         }
-
+        
         range = [shortName rangeOfString:@":"];
     };
     
@@ -1075,5 +1192,191 @@
     return shortName;
 }
 
+//Pistella
+#pragma mark - CBCentralManager Delegate methods
+
+-(void) centralManagerDidUpdateState:(CBCentralManager *)central {
+    switch (central.state) {
+        case CBManagerStateUnknown:
+            
+            break;
+        case CBManagerStateResetting:
+            break;
+        case CBManagerStateUnsupported:
+            
+            break;
+        case CBManagerStateUnauthorized:
+            
+            break;
+        case CBManagerStatePoweredOff:
+            
+            break;
+        case CBCentralManagerStatePoweredOn:
+            [self startScan];
+            break;
+    }
+}
+
+
+-(void) centralManager:(CBCentralManager *)central didDiscoverPeripheral:(CBPeripheral *)peripheral advertisementData:(NSDictionary *)advertisementData RSSI:(NSNumber *)RSSI {
+    //NSLog(@"Discovered peripheral %@ (%@)",peripheral.name,peripheral.identifier.UUIDString);
+    if (![self.discoveredPeripherals containsObject:peripheral] ) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if ([peripheral.name isEqualToString:@"869867031438312"]) {
+                self.glob_peripheral = peripheral;
+                NSLog(@"[BEACON] Tracker trovato:",peripheral.name);
+            }
+            [self.discoveredPeripherals addObject:peripheral];
+        });
+    }
+}
+//00000000-0000-656B-6962-5F3030345450
+
+-(void) centralManager:(CBCentralManager *)central didConnectPeripheral:(CBPeripheral *)peripheral {
+    self.connectedPeripheral=peripheral;
+    NSLog(@"[BEACON] Connects to %@(%@)",peripheral.name,peripheral.identifier.UUIDString);
+    NSLog(@"[BEACON] Discover services");
+    //Inizializziamo il counter delle scritture effettuate
+    self.writedCharateristic = 0;
+    self.connectedPeripheral.delegate=self;
+    [self.connectedPeripheral discoverServices:nil];
+    dispatch_async(dispatch_get_main_queue(), ^{
+        UIApplication *app=[UIApplication sharedApplication];
+        UIUserNotificationSettings *notifySettings=[[UIApplication sharedApplication] currentUserNotificationSettings];
+        if ((notifySettings.types & UIUserNotificationTypeAlert)!=0) {
+            UILocalNotification *notification=[UILocalNotification new];
+            notification.alertBody=@"[BEACON] Tracker connesso";
+            [app presentLocalNotificationNow:notification];
+        }
+    });
+}
+
+-(void) disconnectTracker
+{
+    if (_glob_peripheral != nil &&
+        _glob_peripheral.state != CBPeripheralStateDisconnected)
+    {
+        NSLog(@"[BEACON] Disconnetto il tracker");
+        [self.central cancelPeripheralConnection:_glob_peripheral];
+    }
+}
+
+-(void) centralManager:(CBCentralManager *)central didDisconnectPeripheral:(CBPeripheral *)peripheral error:(NSError *)error {
+    NSLog(@"[BEACON] Disconnesso dal tracker");
+    dispatch_async(dispatch_get_main_queue(), ^{
+        UIApplication *app=[UIApplication sharedApplication];
+        if (app.applicationState == UIApplicationStateBackground) {
+            NSLog(@"[BEACON] We are in the background");
+            UIUserNotificationSettings *notifySettings=[[UIApplication sharedApplication] currentUserNotificationSettings];
+            if ((notifySettings.types & UIUserNotificationTypeAlert)!=0) {
+                UILocalNotification *notification=[UILocalNotification new];
+                notification.alertBody=@"[BEACON] BLE Device Disconnected";
+                [app presentLocalNotificationNow:notification];
+            }
+        }
+    });
+    /*
+     if ([self.targetPeripheral isEqualToString:peripheral.identifier.UUIDString]) {
+     NSLog(@"PISTELLA - Retrying");
+     [_central connectPeripheral:peripheral options:nil];
+     }
+     */
+}
+
+#pragma mark - CBPeripheralManager delegate methods
+
+- (void)peripheral:(CBPeripheral *)peripheral didModifyServices:(NSArray<CBService *> *)invalidatedServices {
+    NSLog(@"[BEACON] Peripheral %@ (%@) changed the services",peripheral.name,peripheral.identifier.UUIDString);
+}
+
+-(void) updateBeaconsTextWithValue:(BOOL)isPresent beaconsNumber:(long)beaconsNumber beaconMajor:(int)beaconMajor beaconMinor:(int)beaconMinor beaconRssi:(long)beaconRssi beaconDistance:(float)beaconDistance beaconNearby:(NSString*)beaconNearby {
+    
+    if (!isPresent) {
+        NSLog(@"[BEACON] Beacon NON presente");
+    }else{
+        NSLog(@"[BEACON] Beacon PRESENTE: Number:%ld | Major:%d | Minor:%d | RSSI:%ld | Distance:%f | Near:%@",
+              beaconsNumber,
+              beaconMajor,
+              beaconMinor,
+              beaconRssi,
+              beaconDistance,
+              beaconNearby);
+    }
+    
+}
+
+-(void) peripheral:(CBPeripheral *)peripheral didDiscoverServices:(NSError *)error {
+    NSLog(@"[BEACON] Services discovered...");
+    for (CBService *service in peripheral.services) {
+        NSLog(@"[BEACON] Discovered service %@",service.description);
+        if ([service.UUID isEqual:self.deviceInfoUUID]) {
+            [peripheral discoverCharacteristics:nil forService:service];
+        }
+    }
+}
+
+-(void) peripheral:(CBPeripheral *)peripheral didDiscoverCharacteristicsForService:(CBService *)service error:(NSError *)error {
+    NSLog(@"[BEACON] Discovered characteristic...");
+    for (CBCharacteristic *characteristic in service.characteristics ) {
+        NSLog(@"[BEACON] Discovered characteristic %@(%@)",characteristic.description,characteristic.UUID.UUIDString);
+        if ([characteristic.UUID.UUIDString isEqualToString:@"00000000-0000-656B-6962-5F3030345450"]) {
+            NSLog(@"[BEACON] Writing characteristic...");
+            //[peripheral readValueForCharacteristic:characteristic];
+            //Registriamoci per la modifica
+            self.glob_characteristic = characteristic;
+            [peripheral setNotifyValue:YES forCharacteristic:characteristic];
+            //Ed ora scriviamo
+            NSString* str = @"1234_0";
+            NSData* data = [str dataUsingEncoding:NSUTF8StringEncoding];
+            [peripheral writeValue:data forCharacteristic:characteristic type:CBCharacteristicWriteWithResponse];
+        }
+    }
+}
+
+-(void) writeCharateristicOnTracker {
+    
+    if (self.writedCharateristic < 3){
+        NSLog(@"[BEACON] Scrivo nuovamente caratteristica  ");
+        self.writedCharateristic++;
+        NSString* str = @"1234_0";
+        NSData* data = [str dataUsingEncoding:NSUTF8StringEncoding];
+        [self.glob_peripheral writeValue:data forCharacteristic:self.glob_characteristic type:CBCharacteristicWriteWithResponse];
+    }
+}
+
+- (void)peripheral:(CBPeripheral *)peripheral didUpdateNotificationStateForCharacteristic:(CBCharacteristic *)characteristic error:(NSError *)error {
+    NSLog(@"[BEACON] Rilevato aggiornamento della characteristic...(%@:%@)", characteristic.UUID, characteristic.value);
+    //Disconnettiamo
+    //[self disconnectTracker];
+    //[self writeCharateristicOnTracker];
+}
+
+- (void)peripheral:(CBPeripheral *)peripheral didWriteValueForCharacteristic:(CBCharacteristic *)characteristic error:(NSError *)error {
+    if (error) {
+        NSLog(@"[BEACON] !ERROR!: %@",[error localizedDescription]);
+    }else{
+        NSLog(@"[BEACON] OK! CBCharacteristic writed...");
+    }
+}
+
+- (void) beginBackgroundUpdateTask
+{
+    self.backgroundUpdateTask = [[UIApplication sharedApplication] beginBackgroundTaskWithExpirationHandler:^{
+        [self endBackgroundUpdateTask];
+    }];
+}
+
+- (void) endBackgroundUpdateTask
+{
+    [[UIApplication sharedApplication] endBackgroundTask: self.backgroundUpdateTask];
+    self.backgroundUpdateTask = UIBackgroundTaskInvalid;
+}
+
+-(void) startScan {
+    NSLog(@"[BEACON] Starting scan");
+    [self.central scanForPeripheralsWithServices:nil options:nil];
+}
+
+//Pistella END
 
 @end

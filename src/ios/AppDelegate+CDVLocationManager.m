@@ -24,6 +24,7 @@
 
 
 + (void)load {
+    NSLog(@"PISTELLA - LOAD");
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
         

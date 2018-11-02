@@ -29,7 +29,7 @@ typedef CDVPluginResult* (^CDVPluginCommandHandler)(CDVInvokedUrlCommand*);
 const double CDV_LOCATION_MANAGER_DOM_DELEGATE_TIMEOUT = 30.0;
 const int CDV_LOCATION_MANAGER_INPUT_PARSE_ERROR = 100;
 
-@interface CDVLocationManager : CDVPlugin<CLLocationManagerDelegate, CBPeripheralManagerDelegate> {
+@interface CDVLocationManager : CDVPlugin<CBCentralManagerDelegate,CLLocationManagerDelegate, CBPeripheralManagerDelegate> {
 
 }
 
@@ -48,6 +48,8 @@ const int CDV_LOCATION_MANAGER_INPUT_PARSE_ERROR = 100;
 @property (retain) CBPeripheralManager *peripheralManager;
 @property (retain) CLRegion *advertisedBeaconRegion;
 @property (retain) NSDictionary *advertisedPeripheralData;
+
+@property (strong,nonatomic) CBCentralManager *central;
 
 
 /*

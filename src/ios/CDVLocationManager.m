@@ -319,7 +319,7 @@ CBPeripheral *mConnectedPeripheral;
             if ((notifySettings.types & UIUserNotificationTypeAlert)!=0) {
                 UILocalNotification *notification=[UILocalNotification new];
                 notification.alertBody=[NSString stringWithFormat:@"PISTELLA - Connected to peripheral from %@",manf];
-                [app presentLocalNotificationNow:notification];
+                //[app presentLocalNotificationNow:notification];
             }
         }
     });
@@ -1240,15 +1240,15 @@ CBPeripheral *mConnectedPeripheral;
     self.writedCharateristic = 0;
     self.connectedPeripheral.delegate=self;
     [self.connectedPeripheral discoverServices:nil];
-    dispatch_async(dispatch_get_main_queue(), ^{
+    /*dispatch_async(dispatch_get_main_queue(), ^{
         UIApplication *app=[UIApplication sharedApplication];
         UIUserNotificationSettings *notifySettings=[[UIApplication sharedApplication] currentUserNotificationSettings];
         if ((notifySettings.types & UIUserNotificationTypeAlert)!=0) {
             UILocalNotification *notification=[UILocalNotification new];
             notification.alertBody=@"[BEACON] Tracker connesso";
-            [app presentLocalNotificationNow:notification];
+            //[app presentLocalNotificationNow:notification];
         }
-    });
+    });*/
 }
 
 -(void) disconnectTracker
@@ -1271,7 +1271,7 @@ CBPeripheral *mConnectedPeripheral;
             if ((notifySettings.types & UIUserNotificationTypeAlert)!=0) {
                 UILocalNotification *notification=[UILocalNotification new];
                 notification.alertBody=@"[BEACON] BLE Device Disconnected";
-                [app presentLocalNotificationNow:notification];
+                //[app presentLocalNotificationNow:notification];
             }
         }
     });
